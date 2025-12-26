@@ -1,0 +1,3 @@
+[MyModel Eager]  avg step: 131.82 ms | TPS: 151.72
+[MyModel Compile] avg step: 48.35 ms | TPS: 413.63
+[HF GPT2]        avg step: 130.60 ms | TPS: 153.14
