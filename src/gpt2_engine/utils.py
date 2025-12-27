@@ -11,6 +11,7 @@ class GPT2Config:
     n_head: int = 12
     dropout: float = 0.0
     layer_norm_epsilon: float = 1e-5
+    use_triton: bool = True
 
 
 def set_seed(seed: int):

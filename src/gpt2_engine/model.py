@@ -7,6 +7,8 @@ import torch.nn.functional as F
 
 from gpt2_engine.utils import GPT2Config
 
+from gpt2_engine.ops import gelu, layer_norm
+
 PastKeyValue = Tuple[torch.Tensor, torch.Tensor]  # (key, value)
 
 
@@ -73,14 +75,16 @@ class Gpt2Attention(nn.Module):
 class GPT2MLP(nn.Module):
     def __init__(self, config: GPT2Config):
         super().__init__()
+        self.cfg = config
         self.c_fc = nn.Linear(config.n_embd, config.n_embd * 4, bias=True)
-        self.act = nn.GELU()
+        self.act = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(config.n_embd * 4, config.n_embd, bias=True)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.c_fc(x)
-        x = self.act(x)
+        # x = self.act(x)
+        x = gelu(x, use_triton=self.cfg.use_triton)
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
@@ -100,12 +104,19 @@ class GPT2Block(nn.Module):
         layer_past: Optional[PastKeyValue] = None,  # (key, value), each key/value: (batch_size, num_heads, seq_len_past, head_dim)
     ) -> Tuple[torch.Tensor, PastKeyValue]:
         # Attention block
-        a = self.ln_1(x)
+        # a = self.ln_1(x)
+        B,S,H = x.size()
+        a2d = x.view(B*S, H)
+        a2d = layer_norm(a2d, self.ln_1.weight, self.ln_1.bias, eps=self.ln_1.eps, use_triton=self.cfg.use_triton)
+        a = a2d.view(B, S, H)
         attn_output, present = self.attn(a, layer_past=layer_past)
         x = x + attn_output
 
         # MLP block
-        m = self.ln_2(x)
+        m2d = x.view(B*S, H)
+        m2d = layer_norm(m2d, self.ln_2.weight, self.ln_2.bias, eps=self.ln_2.eps, use_triton=self.cfg.use_triton)
+        m = m2d.view(B, S, H)
+        # m = self.ln_2(x)
         mlp_output = self.mlp(m)
         x = x + mlp_output
 
@@ -148,7 +159,10 @@ class GPT2Model(nn.Module):
             x, present = block(x, layer_past)
             presents.append(present)
 
-        x = self.ln_f(x)
+        B,S,H = x.size()
+        x2d = x.view(B*S, H)
+        x2d = layer_norm(x2d, self.ln_f.weight, self.ln_f.bias, eps=self.ln_f.eps, use_triton=self.cfg.use_triton)
+        x = x2d.view(B, S, H)
         return x, presents  # x: (batch_size, seq_len, n_embd), presents: list of (key, value)
 
 

@@ -72,30 +72,57 @@ def main():
     iters = 100
     warmup = 10
 
-    with open("benchmark_results.txt", "w") as f:
-        # 1) My model eager
-        def run_my_eager():
+    with open("benchmark_results.txt", "a") as f:
+        f.write("\n--- E2E Generation Benchmark ---\n")
+        # 1) My model eager (No Triton)
+        my_model.cfg.use_triton = False
+        def run_my_no_triton():
             generate_tokens(my_model, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
 
-        dt = measure_tps(run_my_eager, warmup=warmup, iters=iters)
+        dt = measure_tps(run_my_no_triton, warmup=warmup, iters=iters)
         tps = gen_tokens / dt
-        result = f"[MyModel Eager]  avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
+        result = f"[MyModel (No Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
         print(result)
         f.write(result + "\n")
 
-        # 2) My model torch.compile
-        compiled = torch.compile(my_model, mode="reduce-overhead")
+        # 2) My model eager (Triton)
+        my_model.cfg.use_triton = True
+        def run_my_triton():
+            generate_tokens(my_model, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
 
-        def run_my_compiled():
-            generate_tokens(compiled, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
-
-        dt = measure_tps(run_my_compiled, warmup=warmup, iters=iters)
+        dt = measure_tps(run_my_triton, warmup=warmup, iters=iters)
         tps = gen_tokens / dt
-        result = f"[MyModel Compile] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
+        result = f"[MyModel (Triton)]   avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
         print(result)
         f.write(result + "\n")
 
-        # 3) HF model baseline (also uses cache internally if you call use_cache=True,
+        # 3) My model torch.compile (No Triton)
+        my_model.cfg.use_triton = False
+        compiled_no_triton = torch.compile(my_model, mode="reduce-overhead")
+
+        def run_my_compiled_no_triton():
+            generate_tokens(compiled_no_triton, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
+
+        dt = measure_tps(run_my_compiled_no_triton, warmup=warmup, iters=iters)
+        tps = gen_tokens / dt
+        result = f"[MyModel (Compile + No Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
+        print(result)
+        f.write(result + "\n")
+
+        # 4) My model torch.compile (Triton)
+        my_model.cfg.use_triton = True
+        compiled_triton = torch.compile(my_model, mode="reduce-overhead")
+
+        def run_my_compiled_triton():
+            generate_tokens(compiled_triton, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
+
+        dt = measure_tps(run_my_compiled_triton, warmup=warmup, iters=iters)
+        tps = gen_tokens / dt
+        result = f"[MyModel (Compile + Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}"
+        print(result)
+        f.write(result + "\n")
+
+        # 5) HF model baseline (also uses cache internally if you call use_cache=True,
         # but simplest is just use forward in a similar way via our generate wrapper)
         def hf_forward(input_ids, past_key_values=None):
             out = hf_model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
