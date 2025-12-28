@@ -1,14 +1,19 @@
 GELU Kernel Benchmark (N=4,194,304 elements)
-PyTorch: 0.1121 ms  (139.36 GB/s)
-Triton:  0.1091 ms  (143.25 GB/s)
+PyTorch: 0.1109 ms  (140.93 GB/s)
+Triton:  0.1090 ms  (143.34 GB/s)
 
 LayerNorm Kernel Benchmark (B=16, S=1024, H=768)
-PyTorch: 0.3321 ms
-Triton:  0.3252 ms
+PyTorch: 0.3317 ms
+Triton:  0.3259 ms
+
+Softmax Kernel Benchmark (B=16, H=12, S=1024, T=1024)
+PyTorch: 16.5682 ms  (45.27 GB/s)
+Triton:  5.1098 ms  (146.78 GB/s)
+
 
 --- E2E Generation Benchmark ---
-[MyModel (No Triton)] avg step: 118.68 ms | TPS: 168.51
-[MyModel (Triton)]   avg step: 118.88 ms | TPS: 168.24
-[MyModel (Compile + No Triton)] avg step: 48.72 ms | TPS: 410.49
-[MyModel (Compile + Triton)] avg step: 49.54 ms | TPS: 403.68
-[HF GPT2]        avg step: 124.53 ms | TPS: 160.60
+[MyModel (No Triton)] avg step: 139.92 ms | TPS: 142.94
+[MyModel (Triton)]   avg step: 142.34 ms | TPS: 140.51
+[MyModel (Compile + No Triton)] avg step: 50.25 ms | TPS: 398.05
+[MyModel (Compile + Triton)] avg step: 49.89 ms | TPS: 400.85
+[HF GPT2]        avg step: 145.77 ms | TPS: 137.20

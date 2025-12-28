@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from gpt2_engine.utils import GPT2Config
 
-from gpt2_engine.ops import gelu, layer_norm
+from gpt2_engine.ops import gelu, layer_norm, softmax
 
 PastKeyValue = Tuple[torch.Tensor, torch.Tensor]  # (key, value)
 
@@ -15,6 +15,7 @@ PastKeyValue = Tuple[torch.Tensor, torch.Tensor]  # (key, value)
 class Gpt2Attention(nn.Module):
     def __init__(self, config: GPT2Config):
         super().__init__()
+        self.cfg = config
         assert config.n_embd % config.n_head == 0, "n_embd must be divisible by n_head"
         self.num_heads = config.n_head
         self.head_dim = config.n_embd // config.n_head
@@ -59,10 +60,11 @@ class Gpt2Attention(nn.Module):
 
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (batch_size, num_heads, seq_len, seq_len_total)
         
-        causal = self.mask[Sk - seq_len:Sk, :Sk]  # (seq_len, seq_len_total)
-        attn_scores = attn_scores.masked_fill(causal.view(1, 1, seq_len, Sk), float('-inf'))
+        # causal = self.mask[Sk - seq_len:Sk, :Sk]  # (seq_len, seq_len_total)
+        # attn_scores = attn_scores.masked_fill(causal.view(1, 1, seq_len, Sk), float('-inf'))
+        # attn_weights = F.softmax(attn_scores, dim=-1)  # (batch_size, num_heads, seq_len, seq_len_total)
         
-        attn_weights = F.softmax(attn_scores, dim=-1)  # (batch_size, num_heads, seq_len, seq_len_total)
+        attn_weights = softmax(attn_scores, is_causal=True, use_triton=self.cfg.use_triton)
         attn_weights = self.dropout(attn_weights)
 
         attn_output = torch.matmul(attn_weights, v)  # (batch_size, num_heads, seq_len, head_dim)

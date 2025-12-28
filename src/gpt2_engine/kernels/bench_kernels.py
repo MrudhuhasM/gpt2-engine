@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from gpt2_engine.kernels.gelu import gelu_forward
 from gpt2_engine.kernels.layer_norm import layer_norm_forward
+from gpt2_engine.kernels.softmax import softmax_forward
 
 
 def bench(fn, warmup=25, iters=100):
@@ -79,12 +80,48 @@ def main():
     print(f"LayerNorm Benchmark (B={B}, S={S}, H={H})")
     print(f"PyTorch: {ms_torch:.4f} ms")
     print(f"Triton:  {ms_triton:.4f} ms")
+    print()
 
     # Write to benchmark_results.txt
     with open('/home/mrudhuhas/Documents/Projects/gpt2-engine/benchmark_results.txt', 'a') as f:
         f.write(f"LayerNorm Kernel Benchmark (B={B}, S={S}, H={H})\n")
         f.write(f"PyTorch: {ms_torch:.4f} ms\n")
         f.write(f"Triton:  {ms_triton:.4f} ms\n")
+        f.write("\n")
+
+    # ---------------- Softmax ----------------
+    B, H, S, T = 16, 12, 1024, 1024
+    x3 = torch.randn((B, H, S, T), device=device, dtype=torch.bfloat16)
+    mask = torch.triu(torch.ones((S, T), device=device), diagonal=1).bool()
+
+    def torch_softmax():
+        scores = x3.masked_fill(mask, float('-inf'))
+        return F.softmax(scores, dim=-1)
+
+    def triton_softmax():
+        return softmax_forward(x3, is_causal=True)
+
+    ms_torch = bench(torch_softmax)
+    ms_triton = bench(triton_softmax)
+
+    bytes_total = x3.numel() * x3.element_size()
+    gb = bytes_total / (1024**3)
+
+    # 2x for read + write
+    torch_gbps = (2 * gb) / (ms_torch / 1e3)
+    triton_gbps = (2 * gb) / (ms_triton / 1e3)
+
+    print(f"Softmax Benchmark (B={B}, H={H}, S={S}, T={T})")
+    print(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)")
+    print(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)")
+    print()
+
+    # Write to benchmark_results.txt
+    with open('/home/mrudhuhas/Documents/Projects/gpt2-engine/benchmark_results.txt', 'a') as f:
+        f.write(f"Softmax Kernel Benchmark (B={B}, H={H}, S={S}, T={T})\n")
+        f.write(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)\n")
+        f.write(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)\n")
+        f.write("\n")
 
 
 if __name__ == "__main__":

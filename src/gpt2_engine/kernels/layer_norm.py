@@ -27,6 +27,7 @@ def layer_norm_kernel(
     x = tl.load(x_row_ptr, mask=mask, other=0.0).to(tl.float32)
     mean = tl.sum(x, axis=0) / H
     x_centered = x - mean
+    x_centered = tl.where(mask, x_centered, 0.0)
     var = tl.sum(x_centered * x_centered, axis=0) / H
     inv_std = tl.rsqrt(var + eps)
     x_norm = x_centered * inv_std
