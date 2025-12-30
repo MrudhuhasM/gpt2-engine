@@ -2,6 +2,7 @@ import torch
 from transformers import GPT2TokenizerFast
 
 from gpt2_engine.weights import build_and_load
+from gpt2_engine.kernels.attention import fused_attention_forward
 
 @torch.no_grad()
 def main():
@@ -38,6 +39,26 @@ def main():
     else:
         print("Target diff less than 1e-2")
 
+    # Decoding verification (KV Cache)
+    print("\nRunning Decoding Verification (KV Cache)...")
+    # Simulate decoding step: 1 Query token, 100 Past keys
+    q = torch.randn(1, 12, 1, 64, device=device, dtype=torch.bfloat16)
+    k = torch.randn(1, 12, 100, 64, device=device, dtype=torch.bfloat16)
+    v = torch.randn(1, 12, 100, 64, device=device, dtype=torch.bfloat16)
+
+    # Run yours
+    # Note: user instruction mentioned 0.1, we use it directly.
+    # In real usage it would be 1.0 / math.sqrt(64) = 0.125
+    out_triton = fused_attention_forward(q, k, v, 0.1)
+
+    # Run Reference (SDPA)
+    out_torch = torch.nn.functional.scaled_dot_product_attention(
+       q, k, v, is_causal=False, scale=0.1 # False because we attend to all 100 past tokens
+    )
+
+    # Compare
+    assert torch.allclose(out_triton, out_torch, atol=1e-2)
+    print("Decoding Verification PASSED!")
 
 if __name__ == "__main__":
     main()
