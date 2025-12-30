@@ -14,7 +14,7 @@ def softmax_kernel(
     is_causal: tl.constexpr
 ):
 
-    
+    row_idx = tl.program_id(0)
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols

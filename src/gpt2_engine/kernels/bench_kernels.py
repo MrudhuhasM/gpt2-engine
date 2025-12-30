@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from gpt2_engine.kernels.gelu import gelu_forward
 from gpt2_engine.kernels.layer_norm import layer_norm_forward
 from gpt2_engine.kernels.softmax import softmax_forward
-
+from gpt2_engine.kernels.attention import fused_attention_forward
 
 def bench(fn, warmup=25, iters=100):
     # simple CUDA timing using events
@@ -28,6 +28,7 @@ def bench(fn, warmup=25, iters=100):
 
 def main():
     device = "cuda"
+    results = []
 
     # ---------------- GELU ----------------
     N = 4 * 1024 * 1024
@@ -41,53 +42,34 @@ def main():
 
     ms_torch = bench(torch_gelu)
     ms_triton = bench(triton_gelu)
-
-    bytes_total = x.numel() * x.element_size()
-    gb = bytes_total / (1024**3)
-
-    # 2x for read + write
-    torch_gbps = (2 * gb) / (ms_torch / 1e3)
-    triton_gbps = (2 * gb) / (ms_triton / 1e3)
+    results.append(("GELU", ms_torch, ms_triton, f"N={N:,}"))
 
     print(f"GELU Benchmark (N={N:,} elements)")
-    print(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)")
-    print(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)")
+    print(f"PyTorch: {ms_torch:.4f} ms")
+    print(f"Triton:  {ms_triton:.4f} ms")
     print()
 
-    # Write to benchmark_results.txt
-    with open('/home/mrudhuhas/Documents/Projects/gpt2-engine/benchmark_results.txt', 'a') as f:
-        f.write(f"GELU Kernel Benchmark (N={N:,} elements)\n")
-        f.write(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)\n")
-        f.write(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)\n")
-        f.write("\n")
-
     # ---------------- LayerNorm ----------------
-    B, S, H = 16, 1024, 768
-    x2 = torch.randn((B * S, H), device=device, dtype=torch.bfloat16)
-    gamma = torch.ones((H,), device=device, dtype=torch.bfloat16)
-    beta = torch.zeros((H,), device=device, dtype=torch.bfloat16)
+    B, S, H_ln = 16, 1024, 768
+    x2 = torch.randn((B * S, H_ln), device=device, dtype=torch.bfloat16)
+    gamma = torch.ones((H_ln,), device=device, dtype=torch.bfloat16)
+    beta = torch.zeros((H_ln,), device=device, dtype=torch.bfloat16)
     eps = 1e-5
 
     def torch_ln():
-        return F.layer_norm(x2, (H,), gamma, beta, eps)
+        return F.layer_norm(x2, (H_ln,), gamma, beta, eps)
 
     def triton_ln():
         return layer_norm_forward(x2, gamma, beta, eps)
 
     ms_torch = bench(torch_ln)
     ms_triton = bench(triton_ln)
+    results.append(("LayerNorm", ms_torch, ms_triton, f"B={B}, S={S}, H={H_ln}"))
 
-    print(f"LayerNorm Benchmark (B={B}, S={S}, H={H})")
+    print(f"LayerNorm Benchmark (B={B}, S={S}, H={H_ln})")
     print(f"PyTorch: {ms_torch:.4f} ms")
     print(f"Triton:  {ms_triton:.4f} ms")
     print()
-
-    # Write to benchmark_results.txt
-    with open('/home/mrudhuhas/Documents/Projects/gpt2-engine/benchmark_results.txt', 'a') as f:
-        f.write(f"LayerNorm Kernel Benchmark (B={B}, S={S}, H={H})\n")
-        f.write(f"PyTorch: {ms_torch:.4f} ms\n")
-        f.write(f"Triton:  {ms_triton:.4f} ms\n")
-        f.write("\n")
 
     # ---------------- Softmax ----------------
     B, H, S, T = 16, 12, 1024, 1024
@@ -103,26 +85,44 @@ def main():
 
     ms_torch = bench(torch_softmax)
     ms_triton = bench(triton_softmax)
-
-    bytes_total = x3.numel() * x3.element_size()
-    gb = bytes_total / (1024**3)
-
-    # 2x for read + write
-    torch_gbps = (2 * gb) / (ms_torch / 1e3)
-    triton_gbps = (2 * gb) / (ms_triton / 1e3)
+    results.append(("Softmax", ms_torch, ms_triton, f"B={B}, H={H}, S={S}, T={T}"))
 
     print(f"Softmax Benchmark (B={B}, H={H}, S={S}, T={T})")
-    print(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)")
-    print(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)")
+    print(f"PyTorch: {ms_torch:.4f} ms")
+    print(f"Triton:  {ms_triton:.4f} ms")
     print()
 
-    # Write to benchmark_results.txt
-    with open('/home/mrudhuhas/Documents/Projects/gpt2-engine/benchmark_results.txt', 'a') as f:
-        f.write(f"Softmax Kernel Benchmark (B={B}, H={H}, S={S}, T={T})\n")
-        f.write(f"PyTorch: {ms_torch:.4f} ms  ({torch_gbps:.2f} GB/s)\n")
-        f.write(f"Triton:  {ms_triton:.4f} ms  ({triton_gbps:.2f} GB/s)\n")
+    # ---------------- Attention ----------------
+    B, H, S, D = 2, 12, 1024, 64
+    q = torch.randn((B, H, S, D), device=device, dtype=torch.bfloat16)
+    k = torch.randn((B, H, S, D), device=device, dtype=torch.bfloat16)
+    v = torch.randn((B, H, S, D), device=device, dtype=torch.bfloat16)
+    sm_scale = 1.0 / (D ** 0.5)
+
+    def torch_attention():
+        return F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=sm_scale)
+
+    def triton_attention():
+        return fused_attention_forward(q, k, v, sm_scale)
+
+    ms_torch = bench(torch_attention)
+    ms_triton = bench(triton_attention)
+    results.append(("Attention", ms_torch, ms_triton, f"B={B}, H={H}, S={S}, D={D}"))
+
+    print(f"Attention Benchmark (B={B}, H={H}, S={S}, D={D})")
+    print(f"PyTorch (SDPA): {ms_torch:.4f} ms")
+    print(f"Triton (Fused): {ms_triton:.4f} ms")
+    print()
+
+    # Write all results to benchmark_results.txt
+    with open('benchmark_results.txt', 'w') as f:
+        f.write("Triton Kernel Benchmarks\n")
+        f.write("========================\n")
+        f.write(f"{'Kernel':<15} | {'PyTorch (ms)':<15} | {'Triton (ms)':<15} | {'Configuration'}\n")
+        f.write("-" * 80 + "\n")
+        for name, ms_p, ms_t, config in results:
+            f.write(f"{name:<15} | {ms_p:<15.4f} | {ms_t:<15.4f} | {config}\n")
         f.write("\n")
-
-
+    
 if __name__ == "__main__":
     main()

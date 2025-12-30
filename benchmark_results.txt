@@ -1,19 +1,19 @@
-GELU Kernel Benchmark (N=4,194,304 elements)
-PyTorch: 0.1109 ms  (140.93 GB/s)
-Triton:  0.1090 ms  (143.34 GB/s)
+Triton Kernel Benchmarks
+========================
+Kernel          | PyTorch (ms)    | Triton (ms)     | Configuration
+--------------------------------------------------------------------------------
+GELU            | 0.1108          | 0.1098          | N=4,194,304
+LayerNorm       | 0.3318          | 0.3245          | B=16, S=1024, H=768
+Softmax         | 16.5717         | 5.1127          | B=16, H=12, S=1024, T=1024
+Attention       | 0.2507          | 0.2523          | B=2, H=12, S=1024, D=64
 
-LayerNorm Kernel Benchmark (B=16, S=1024, H=768)
-PyTorch: 0.3317 ms
-Triton:  0.3259 ms
+End-to-End Generation Benchmarks (GPT-2 Small)
+==============================================
+Mode                           | Avg Step (ms)   | Tokens/Sec
+-----------------------------------------------------------------
+MyModel (Eager)                | 146.19          | 136.81
+MyModel (Triton)               | 146.17          | 136.82
+MyModel (Compile + No Triton)  | 76.31           | 262.09
+MyModel (Compile + Triton)     | 72.63           | 275.35
+HF GPT2                        | 133.58          | 149.72
 
-Softmax Kernel Benchmark (B=16, H=12, S=1024, T=1024)
-PyTorch: 16.5682 ms  (45.27 GB/s)
-Triton:  5.1098 ms  (146.78 GB/s)
-
-
---- E2E Generation Benchmark ---
-[MyModel (No Triton)] avg step: 139.92 ms | TPS: 142.94
-[MyModel (Triton)]   avg step: 142.34 ms | TPS: 140.51
-[MyModel (Compile + No Triton)] avg step: 50.25 ms | TPS: 398.05
-[MyModel (Compile + Triton)] avg step: 49.89 ms | TPS: 400.85
-[HF GPT2]        avg step: 145.77 ms | TPS: 137.20
