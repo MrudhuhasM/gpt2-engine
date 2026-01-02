@@ -5,7 +5,7 @@ from transformers import GPT2TokenizerFast
 
 from gpt2_engine.weights import build_and_load
 from gpt2_engine.utils import top_k_sample, set_seed
-
+from gpt2_engine.quantize import replace_linear_with_quant
 
 @torch.no_grad()
 def generate_tokens(model, input_ids, new_tokens: int, use_cache: bool = True, k: int = 50):
@@ -32,30 +32,7 @@ def generate_tokens(model, input_ids, new_tokens: int, use_cache: bool = True, k
         out.append(cur)
     return torch.cat(out, dim=1)
 
-@torch.no_grad()
-def hf_generate_tokens(model, input_ids, new_tokens: int, k: int = 50):
-    # HF model has different pkv structure (tuple of tuples)
-    model.eval()
-    pkv = None
-    
-    res = model(input_ids, past_key_values=None, use_cache=True)
-    logits, pkv = res.logits, res.past_key_values
-    
-    next_logits = logits[:, -1, :]
-    next_token = top_k_sample(next_logits, k=k)
-    out = [input_ids, next_token]
-    cur = next_token
-    
-    for _ in range(new_tokens - 1):
-        res = model(cur, past_key_values=pkv, use_cache=True)
-        logits, pkv = res.logits, res.past_key_values
-        next_logits = logits[:, -1, :]
-        cur = top_k_sample(next_logits, k=k)
-        out.append(cur)
-    return torch.cat(out, dim=1)
-
-
-def measure_tps(fn, warmup=10, iters=50):
+def measure_tps(fn, warmup=5, iters=20):
     # warmup
     for _ in range(warmup):
         fn()
@@ -68,100 +45,96 @@ def measure_tps(fn, warmup=10, iters=50):
     t1 = time.time()
     return (t1 - t0) / iters
 
-
 @torch.no_grad()
 def main():
     set_seed(0)
-    assert torch.cuda.is_available(), "Benchmark expects CUDA."
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
+        print("CUDA required for benchmark")
+        return
 
-    device = "cuda"
-    dtype = torch.bfloat16
+    print("Running End-to-End Benchmark (Generate)...")
 
-    my_model, hf_model = build_and_load("gpt2", device=device, dtype=dtype)
     tok = GPT2TokenizerFast.from_pretrained("gpt2")
-
     prompt = "Alan Turing was a"
     input_ids = tok(prompt, return_tensors="pt")["input_ids"].to(device)
-
-    gen_tokens = 20
-    iters = 20
-    warmup = 5
-
-    results = []
-
-    # 1) My model eager (No Triton)
-    my_model.cfg.use_triton = False
-    def run_my_no_triton():
-        generate_tokens(my_model, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
-
-    dt = measure_tps(run_my_no_triton, warmup=warmup, iters=iters)
-    tps = gen_tokens / dt
-    results.append(("MyModel (Eager)", dt * 1000, tps))
-    print(f"[MyModel (Eager)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}")
-
-    # 2) My model eager (Triton)
-    my_model.cfg.use_triton = True
-    def run_my_triton():
-        generate_tokens(my_model, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
-
-    dt = measure_tps(run_my_triton, warmup=warmup, iters=iters)
-    tps = gen_tokens / dt
-    results.append(("MyModel (Triton)", dt * 1000, tps))
-    print(f"[MyModel (Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}")
-
-    # 3) My model compile (No Triton)
-    my_model.cfg.use_triton = False
-    compiled_no_tri = torch.compile(my_model)
-    def run_my_compiled_no_tri():
-        generate_tokens(compiled_no_tri, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
-
-    dt = measure_tps(run_my_compiled_no_tri, warmup=warmup, iters=iters)
-    tps = gen_tokens / dt
-    results.append(("MyModel (Compile + No Triton)", dt * 1000, tps))
-    print(f"[MyModel (Compile + No Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}")
-
-    # 4) My model compile (Triton)
-    my_model.cfg.use_triton = True
-    compiled_tri = torch.compile(my_model)
-    def run_my_compiled_tri():
-        generate_tokens(compiled_tri, input_ids, new_tokens=gen_tokens, use_cache=True, k=50)
-
-    dt = measure_tps(run_my_compiled_tri, warmup=warmup, iters=iters)
-    tps = gen_tokens / dt
-    results.append(("MyModel (Compile + Triton)", dt * 1000, tps))
-    print(f"[MyModel (Compile + Triton)] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}")
-
-    # 5) HF Model
-    def run_hf():
-        hf_generate_tokens(hf_model, input_ids, new_tokens=gen_tokens, k=50)
-        
-    dt = measure_tps(run_hf, warmup=warmup, iters=iters)
-    tps = gen_tokens / dt
-    results.append(("HF GPT2", dt * 1000, tps))
-    print(f"[HF GPT2] avg step: {dt*1000:.2f} ms | TPS: {tps:.2f}")
-
-    # Write to benchmark_results.txt
-    # We overwrite the end-to-end section or just append and we'll manually clean if needed, 
-    # but let's try to overwrite the file properly this time by reading kernel section first.
+    gen_tokens = 50 
     
-    kernel_results = ""
-    if os.path.exists("benchmark_results.txt"):
-        with open("benchmark_results.txt", "r") as f:
-            content = f.read()
-            if "End-to-End Generation Benchmarks" in content:
-                kernel_results = content.split("End-to-End Generation Benchmarks")[0]
-            else:
-                kernel_results = content
+    results = []
+    
+    # 1. PyTorch Eager FP16 (No Triton Ops)
+    print("\nLoading Baseline (PyTorch Eager FP16)...")
+    model_torch, _ = build_and_load("gpt2", device=device, dtype=torch.float16)
+    # Disable Triton ops explicitly
+    model_torch.cfg.use_triton = False
+    
+    def run_torch():
+        generate_tokens(model_torch, input_ids, new_tokens=gen_tokens)
+    
+    print("Benchmarking PyTorch Eager...")
+    dt_torch = measure_tps(run_torch)
+    tps_torch = gen_tokens / dt_torch
+    mem_torch = torch.cuda.max_memory_allocated() / 1024**3
+    results.append(("PyTorch FP16 (Baseline)", tps_torch, mem_torch))
+    
+    del model_torch
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
 
+    # 2. Triton FP16 (Triton Ops)
+    print("\nLoading Triton FP16...")
+    model_triton, _ = build_and_load("gpt2", device=device, dtype=torch.float16)
+    model_triton.cfg.use_triton = True
+    
+    def run_triton():
+        generate_tokens(model_triton, input_ids, new_tokens=gen_tokens)
+    
+    print("Benchmarking Triton FP16...")
+    dt_triton = measure_tps(run_triton)
+    tps_triton = gen_tokens / dt_triton
+    mem_triton = torch.cuda.max_memory_allocated() / 1024**3
+    results.append(("Triton FP16 Ops", tps_triton, mem_triton))
+    
+    # Clean up
+    del model_triton
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    
+    # 3. W8A16 Quantized Model
+    print("\nLoading W8A16 Model...")
+    model_int8, _ = build_and_load("gpt2", device=device, dtype=torch.float16)
+    model_int8.cfg.use_triton = True
+    replace_linear_with_quant(model_int8)
+    
+    def run_int8():
+        generate_tokens(model_int8, input_ids, new_tokens=gen_tokens)
+        
+    print("Benchmarking W8A16...")
+    dt_int8 = measure_tps(run_int8)
+    tps_int8 = gen_tokens / dt_int8
+    mem_int8 = torch.cuda.max_memory_allocated() / 1024**3
+    results.append(("Triton W8A16 (Quant)", tps_int8, mem_int8))
+    
+    # Display Results
+    print("\n" + "="*80)
+    print(f"{'Configuration':<30} | {'TPS':<10} | {'Peak VRAM (GB)':<15} | {'Speedup':<10}")
+    print("-" * 80)
+    
+    baseline_tps = results[0][1]
+    
+    for name, tps, mem in results:
+        speedup = tps / baseline_tps
+        print(f"{name:<30} | {tps:<10.2f} | {mem:<15.2f} | {speedup:<10.2f}x")
+    print("="*80)
+    
     with open("benchmark_results.txt", "w") as f:
-        f.write(kernel_results.strip() + "\n\n")
-        f.write("End-to-End Generation Benchmarks (GPT-2 Small)\n")
-        f.write("==============================================\n")
-        f.write(f"{'Mode':<30} | {'Avg Step (ms)':<15} | {'Tokens/Sec'}\n")
-        f.write("-" * 65 + "\n")
-        for mode, ms, tps in results:
-            f.write(f"{mode:<30} | {ms:<15.2f} | {tps:.2f}\n")
-        f.write("\n")
+        f.write("End-to-End Generation Benchmark (TPS)\n")
+        f.write("="*80 + "\n")
+        f.write(f"{'Configuration':<30} | {'TPS':<10} | {'Peak VRAM (GB)':<15} | {'Speedup':<10}\n")
+        f.write("-" * 80 + "\n")
+        for name, tps, mem in results:
+            speedup = tps / baseline_tps
+            f.write(f"{name:<30} | {tps:<10.2f} | {mem:<15.2f} | {speedup:<10.2f}x\n")
 
 if __name__ == "__main__":
     main()

@@ -1,3 +1,14 @@
+End-to-End Generation Benchmarks (GPT-2 Small)
+==============================================
+Mode                           | Avg Step (ms)   | Tokens/Sec
+-----------------------------------------------------------------
+MyModel (Eager)                | 146.19          | 136.81
+MyModel (Triton)               | 146.17          | 136.82
+MyModel (Compile + No Triton)  | 76.31           | 262.09
+MyModel (Compile + Triton)     | 72.63           | 275.35
+HF GPT2                        | 133.58          | 149.72
+
+
 Triton Kernel Benchmarks
 ========================
 Kernel          | PyTorch (ms)    | Triton (ms)     | Configuration
@@ -11,9 +22,6 @@ End-to-End Generation Benchmarks (GPT-2 Small)
 ==============================================
 Mode                           | Avg Step (ms)   | Tokens/Sec
 -----------------------------------------------------------------
-MyModel (Eager)                | 146.19          | 136.81
-MyModel (Triton)               | 146.17          | 136.82
-MyModel (Compile + No Triton)  | 76.31           | 262.09
-MyModel (Compile + Triton)     | 72.63           | 275.35
-HF GPT2                        | 133.58          | 149.72
-
+PyTorch FP16 (Baseline)        | 6.30            | 158.65
+Triton FP16 Ops                | 6.68            | 149.70
+Triton W8A16 (Quant)           | 10.40           | 96.11

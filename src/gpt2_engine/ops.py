@@ -68,3 +68,5 @@ def attention(
     
     attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
     return torch.matmul(attn_weights, v)
+
+from gpt2_engine.quantize import QuantLinear

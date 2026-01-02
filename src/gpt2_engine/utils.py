@@ -12,6 +12,8 @@ class GPT2Config:
     dropout: float = 0.0
     layer_norm_epsilon: float = 1e-5
     use_triton: bool = True
+    quantized: bool = False
+
 
 
 def set_seed(seed: int):
@@ -20,26 +22,15 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def top_k_sample(logits: torch.Tensor, k: int = 50) -> torch.Tensor:
+    """
+    Sample from top-k logits.
+    logits: (batch_size, vocab_size)
+    """
+    values, indices = torch.topk(logits, k, dim=-1)
+    probs = torch.softmax(values, dim=-1)
+    sample_indices = torch.multinomial(probs, num_samples=1)
+    # Map back to original indices
+    # sample_indices: (batch_size, 1) -> (batch_size, 1) indices into 'indices'
+    return torch.gather(indices, -1, sample_indices)
 
-@torch.no_grad()
-def top_k_sample(logits: torch.Tensor, k: int = 50, temperature: float = 1.0) -> torch.Tensor:
-
-    if k <= 0:
-        raise ValueError("k must be a positive integer.")
-    
-    if temperature <= 0.0:
-        raise ValueError("temperature must be a positive float.")
-    
-    if temperature != 1.0:
-        logits = logits / temperature
-
-    if k is not None and k > 0:
-        values, index = torch.topk(logits, k)
-        probs = torch.softmax(values, dim=-1)
-        next_idx = torch.multinomial(probs, num_samples=1)
-        next_token = index.gather(-1, next_idx)
-        return next_token
-    
-    probs = torch.softmax(logits, dim=-1)
-    next_token = torch.multinomial(probs, num_samples=1)
-    return next_token
