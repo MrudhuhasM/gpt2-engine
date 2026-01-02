@@ -63,7 +63,7 @@ def _fused_attention_kernel(
         beta = tl.exp(m_j - m_new)
         
         acc = acc * alpha[:, None]
-        acc += tl.dot(p.to(tl.bfloat16), v) * beta[:, None]
+        acc += tl.dot(p.to(v.type.element_ty), v) * beta[:, None]
         
         l_i = l_i * alpha + l_j * beta
         m_i = m_new

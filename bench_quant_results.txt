@@ -1,0 +1,14 @@
+GPT-2 W8A16 Quantization Benchmark Results
+============================================================
+Metric               | FP16 (Baseline) | W8A16 (Quantized) | Diff      
+------------------------------------------------------------
+Model Size (MB)      | 249.35          | 168.51          | -80.84 (32.4%)
+Inference (ms)       | 5.62            | 7.27            | 0.77x
+============================================================
+
+Configuration:
+- Batch Size: 1
+- Seq Length: 128
+- Device: NVIDIA GeForce RTX 3050 6GB Laptop GPU
+- Precision: W8A16 (Weights int8, Activations fp16)
+
