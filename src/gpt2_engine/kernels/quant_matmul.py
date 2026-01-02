@@ -9,6 +9,9 @@ import torch
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=8),
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=4),
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=4),
+        # New configs for coalesced load optimization (larger K, smaller tiles)
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=4),
     ],
     key=['M', 'N', 'K'],
 )
@@ -54,8 +57,12 @@ def quant_matmul_kernel(
     # A: matches rows offs_am, cols offs_k starts at 0
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     
-    # B: matches rows offs_k, cols offs_bn
-    b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    # B: Optimized Coalesced Load
+    # We load B in shape (BLOCK_N, BLOCK_K) so that the inner dimension is K (stride 1).
+    # Then we transpose it to (BLOCK_K, BLOCK_N) for calculation.
+    # Note: stride_bn is the stride of N dimension (large stride K)
+    #       stride_bk is the stride of K dimension (small stride 1)
+    b_ptrs = b_ptr + (offs_bn[:, None] * stride_bn + offs_k[None, :] * stride_bk)
     
     # Scales: matches cols offs_bn (per channel N)
     # Assumes scales stored contiguously [N]
@@ -63,7 +70,7 @@ def quant_matmul_kernel(
     
     # Load scales once (they don't depend on K)
     # scales shape: (BLOCK_N,)
-    scales = tl.load(scales_ptrs)
+    scales = tl.load(scales_ptrs, mask=offs_bn < N, other=0.0)
     
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     
@@ -82,8 +89,15 @@ def quant_matmul_kernel(
         
         a = tl.load(a_ptrs, mask=load_mask, other=0.0)
         
-        # Load B (int8)
-        b_int8 = tl.load(b_ptrs, mask=offs_k[:, None] < k_remaining, other=0.0)
+        # Load B (int8) - Coalesced
+        # Shape loaded: (BLOCK_N, BLOCK_K)
+        # Mask: offs_k in dim 1 < k_remaining. offs_bn in dim 0 < N (already implicitly handled by layout? No, careful)
+        # Actually offs_bn is handled by B alloc size usually, but let's be safe
+        b_mask = (offs_bn[:, None] < N) & (offs_k[None, :] < k_remaining)
+        b_int8 = tl.load(b_ptrs, mask=b_mask, other=0.0)
+        
+        # Transpose to (BLOCK_K, BLOCK_N)
+        b_int8 = tl.trans(b_int8)
         
         # Dequantize
         # b_int8 (K, N) -> float16
@@ -95,7 +109,7 @@ def quant_matmul_kernel(
         
         # Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak
-        b_ptrs += BLOCK_SIZE_K * stride_bk
+        b_ptrs += BLOCK_SIZE_K * stride_bk # Advance in K dim (dim 1 of loaded block)
         
     c = accumulator.to(tl.float16)
     
